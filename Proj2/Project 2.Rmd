@@ -1,0 +1,863 @@
+---
+title: "Project 2"
+author: "Jan Alexandersson, Max Sjödin & Anton Stråhle"
+date: "15 februari 2020"
+output: pdf_document
+---
+
+#Introduction
+
+The purpose of this project is to examine how one can predict future expenses in order to be able to reserve against them. Specifically we wish to examine both the expected future payments as well as the variance within these payments. The data which we have been given is collected over several years and divided between two vastly different insurance products, henceforth refereed to as product, or branch, 1 or 2. It is important to mention that we use Jan Alexanderssons data in this project. 
+
+#Exercise 1
+
+```{r, echo = FALSE, warning = FALSE}
+
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(readr))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(gridExtra))
+
+options(knitr.kable.NA = '')
+
+data <- read.delim("Projekt2_Grupp9.txt", sep = ";") %>% 
+  mutate(ClaimYear = floor((ClaimDay-1)/365) + 1,
+         PaymentYear = floor((PaymentDay-1)/365) + 1) %>% 
+  mutate(DevelopmentYear = PaymentYear-ClaimYear + 1) %>% 
+  select(-PaymentYear) %>% 
+  complete(ClaimType, nesting(ClaimYear, DevelopmentYear), fill = list(PaymentDay = 1, ClaimCost = 0, ClaimDay = 0)) %>% 
+  filter(DevelopmentYear < 11)
+  
+
+ct1 <- data %>% 
+  filter(ClaimType == 1) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>%
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  filter(ClaimYear >= 11) %>% 
+  select(-ClaimYear)
+
+ct2 <- data %>% 
+  filter(ClaimType == 2) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>%
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  filter(ClaimYear >= 11) %>% 
+  select(-ClaimYear)
+
+#Estimates the incremental factors f based on the observed triangle (not trapezoid!)
+
+estimateF <- function(ct){
+  
+  n <- ncol(ct)
+  
+  r <- nrow(ct)
+  
+  fVec <- c()
+  
+  for(i in 1:(n-1)){
+    
+    f <- sum(ct[1:(r-i),i+1])/sum(ct[1:(r-i),i])
+    
+    fVec[i] <- f
+    
+  }
+  
+  fVec
+  
+}
+
+
+fillct <- function(ct){
+  
+  n <- ncol(ct)
+  
+  r <- nrow(ct)
+  
+  s <- r - n
+  
+  fHat <- estimateF(ct)
+  
+  for(i in (2+s):r){
+  
+    for(j in (n-i+2+s):n){
+    
+      ct[i,j] <- ct[i,j-1]*fHat[j-1]
+    
+    }
+    
+  }
+
+    ct
+  
+}
+
+fHat1 <- estimateF(ct1)
+
+fHat2 <- estimateF(ct2)
+
+fullct1 <- fillct(ct1)
+
+fullct2 <- fillct(ct2)
+
+```
+
+Since the claims triangle is limited to 10 development years the data has been truncated to accommodate this limit. The final 10 years of the data can be aggregated in order to create the following two paid claims triangles. 
+
+`r kable(ct1, caption = "Paid claims triangle for product 1", row.names = c(1:10)) %>% kable_styling(latex_options =c("hold_position", "scale_down"))`
+
+`r kable(ct2, caption = "Paid claims triangle of product 2", row.names = c(1:10)) %>% kable_styling(latex_options =c("hold_position", "scale_down"))`
+
+Using Mack's non-parametric CL approach we can predict the total cost of future payments per year as follows in Table 3 and Table 4.
+
+`r kable(fullct1, caption = "Full claims triangle of type 1 predicted with CL", row.names = c(1:10)) %>% kable_styling(latex_options =c("hold_position", "scale_down"))`
+
+`r kable(fullct2, caption = "Full claims triangle of type 2 predicted with CL", row.names = c(1:10)) %>% kable_styling(latex_options =c("hold_position", "scale_down"))`
+
+\newpage
+
+Lastly we wish to predict the future payments for each of the claims years, i.e. $R_{2,i},...,R_{10,i}$, and then combine them into a the total chain ladder reserves, i.e. $R_{i}$ for $i = 1,2$.
+
+```{r echo = FALSE, warning = FALSE}
+
+reserve1 <- as.matrix(fullct1)[, 10] - diag(as.matrix(fullct1)[10:1,])[10:1]
+
+reserve2 <- as.matrix(fullct2)[, 10] - diag(as.matrix(fullct2)[10:1,])[10:1]
+
+kable(rbind(c("Product 1" , round(sum(reserve1))), c("Product 2", round(sum(reserve2)))), caption = "Total Chain Ladder Reserve") %>%  kable_styling(latex_options =c("hold_position"))
+```
+
+
+#Exercise 2
+
+We now want to check whether or not Mack's underlying assumptions are met in our case. The assumptions are as follows.
+
+\begin{enumerate}
+  \item $E[C_{i,k+1}|C_{i,1},...,C{i,k}] = f_kC_{i,k}$
+  \item Independent accident years
+  \item $Var(C_{i,k+1}|C_{i,1},...,C{i,k}) = \sigma_k^2C_{i,k}$
+\end{enumerate}
+
+We begin by examine whether or not the we have an approximate linear relationship between $C_{i,k}$ and $C_{i,k+1}$ for $i = 1,...,10$ for the two branches.
+
+```{r echo = FALSE, warning = FALSE}
+
+#Gör om gör fint!
+
+par(mfrow=c(4,2), cex=0.35) 
+
+plot(ct1$`1`, ct1$`2`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[1]}), col = "blue")
+
+plot(ct1$`2`, ct1$`3`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[2]}), col = "blue")
+
+plot(ct1$`3`, ct1$`4`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[3]}), col = "blue")
+
+plot(ct1$`4`, ct1$`5`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[4]}), col = "blue")
+
+plot(ct1$`5`, ct1$`6`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[5]}), col = "blue")
+
+plot(ct1$`6`, ct1$`7`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[6]}), col = "blue")
+
+plot(ct1$`7`, ct1$`8`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[7]}), col = "blue")
+
+plot(ct1$`8`, ct1$`9`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat1[8]}), col = "blue")
+title("Figure 1: Linear approximation between C_i,k and C_i,k+1 for product 1", line = -2, outer = TRUE, cex.main = 2)
+#Skoja dem blev faktiskt inte så fula men fixa axlarna
+```
+
+\medskip
+
+
+```{r echo = FALSE, warning = FALSE}
+par(mfrow=c(4,2), cex=0.35) 
+
+plot(ct2$`1`, ct2$`2`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[1]}), col = "blue")
+
+plot(ct2$`2`, ct2$`3`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[2]}), col = "blue")
+
+plot(ct2$`3`, ct2$`4`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[3]}), col = "blue")
+
+plot(ct2$`4`, ct2$`5`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[4]}), col = "blue")
+
+plot(ct2$`5`, ct2$`6`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[5]}), col = "blue")
+
+plot(ct2$`6`, ct2$`7`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[6]}), col = "blue")
+
+plot(ct2$`7`, ct2$`8`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[7]}), col = "blue")
+
+plot(ct2$`8`, ct2$`9`)
+lines(seq(1e6,7e7, by = 10000), sapply(X = seq(1e6,7e7, by = 10000), FUN = function(x){ x*fHat2[8]}), col = "blue")
+title("Figure 2: Linear approximation between C_i,k and C_i,k+1 for product 2", line = -2, outer = TRUE, cex.main = 2)
+```
+
+We note from the previous figures that the assumption of linearity seem to hold for both insurance branches.
+
+```{r echo = FALSE, warning = FALSE, include = FALSE}
+
+residualHelper <- function(ct){
+  
+  fHat <- estimateF(ct)
+  
+  n <- nrow(ct)
+  
+  df <- data.frame(matrix(ncol = 3, nrow = 0))
+  
+  for(i in 1:(n-1)){
+  
+    for(j in 2:(n-i+1)){
+    
+      res <- (ct[i,j] - ct[i,j-1]*fHat[j-1])/sqrt(ct[i,j-1])
+      
+      df <- rbind(df, unlist(c(i,unname(res), ct[i,j-1])))
+    
+    }
+    
+  }
+
+  df
+  
+}
+
+
+resFrame1 <- residualHelper(ct1) %>% 
+  setNames(c("Year", "Res", "Ci"))
+
+res1 <- ggplot(resFrame1, aes(x = Ci, y = Res)) +
+  geom_point() +
+  facet_wrap(~Year, scales = "free_y") 
+
+#Notera att vi bara beaktar år med fler än 6 punkter enl Mack!
+#OBS enbart använt vanliga f. Kan vara bra att kolla resterande
+
+resFrame2 <- residualHelper(ct2) %>% 
+  setNames(c("Year", "Res", "Ci"))
+
+res2 <- ggplot(resFrame2, aes(x = Ci, y = Res)) +
+  geom_point() +
+  facet_wrap(~Year, scales = "free_y")
+
+#grid.arrange(res1, res2)
+
+```
+
+```{r echo = FALSE, warning = FALSE}
+#JAN FIXAR
+
+estimate_f_k0<- function(ct){
+  I <- nrow(ct)
+  fVec <- c()
+  for(k in 1:(I-1)){
+    fVec[k] <- sum(ct[1:(I-k), k] * ct[1:(I-k), k+1])/sum(ct[1:(I-k), k]^2)
+  }
+  return(fVec)
+}
+
+estimate_f_k2<- function(ct){
+  I <- nrow(ct)
+  fVec <- c()
+  for(k in 1:(I-1)){
+    fVec[k] <- 1/(I-k) * sum(ct[1:(I-k), k+1]/ct[1:(I-k), k])
+  }
+  return(fVec)
+}
+
+plot_residual_for_CL_f_k0 <- function(k, ct, product){
+  C_ik_plus1 <- as.data.frame(ct)[1:(10 - k), k + 1]
+  C_ik <- as.data.frame(ct)[1:(10 - k), k]
+  f_k <- estimate_f_k0(ct)[k]
+  plot(C_ik, (C_ik_plus1 - C_ik * f_k), ylab = "Weighted residual", main = paste("Product ", product))
+  abline(h = 0)
+}
+
+plot_residual_for_CL_f_k1 <- function(k, ct, product){
+  C_ik_plus1 <- as.data.frame(ct)[1:(10 - k), k + 1]
+  C_ik <- as.data.frame(ct)[1:(10 - k), k]
+  f_k <- estimateF(ct)[k]
+  plot(C_ik, (C_ik_plus1 - C_ik * f_k) / sqrt(C_ik) , ylab = "Weighted residual", main = paste("Product ", product))
+  abline(h = 0)
+}
+
+plot_residual_for_CL_f_k2 <- function(k, ct, product){
+  C_ik_plus1 <- as.data.frame(ct)[1:(10 - k), k + 1]
+  C_ik <- as.data.frame(ct)[1:(10 - k), k]
+  f_k <- estimate_f_k2(ct)[k]
+  plot(C_ik, (C_ik_plus1 - C_ik * f_k) / C_ik, ylab = "Weighted residual", main = paste("Product ", product))
+  abline(h = 0)
+}
+
+# par(mfrow = c(1, 2))
+# plot_residual_for_CL_f_k0(k=1, ct1, 1)
+# plot_residual_for_CL_f_k0(k=1, ct2, 2)
+# 
+# par(mfrow = c(1, 2))
+# plot_residual_for_CL_f_k1(k=1, ct1, 1)
+# plot_residual_for_CL_f_k1(k=1, ct2, 2)
+# 
+# par(mfrow = c(1, 2))
+# plot_residual_for_CL_f_k2(k=1, ct1, 1)
+# plot_residual_for_CL_f_k2(k=1, ct2, 2)
+
+```
+
+We continue by investigating the third chain ladder assumption. According to Mack's article it is suggested to plot three different plots of residuals. First we plot expression 1: $C_{i,k+1} - C_{i,k}f_{k0}$ against $C_{i,k}$, where $f_{k0} = \sum_{i=1}^{I-k} C_{i,k} C_{i,k+1} / \sum_{i=1}^{I-k} C_{i,k}^2$. 
+
+\bigskip
+
+```{r echo = FALSE, warning = FALSE, fig.height=2.5}
+par(mfrow = c(1, 2))
+plot_residual_for_CL_f_k0(k=1, ct1, 1)
+plot_residual_for_CL_f_k0(k=1, ct2, 2)
+title("Figure 3: Expression 1 against C_i,k for product 1 and 2", line = -1, outer = TRUE, cex.main = 1)
+```
+
+Then we plot expression 2: $(C_{i,k+1} - C_{i,k}f_{k1}) / \sqrt{C_{i,k}}$ against $C_{i,k}$, where $f_{k1} = \sum_{i=1}^{I-k} C_{i,k+1} / \sum_{i=1}^{I-k} C_{i,k}$. 
+
+\bigskip
+
+```{r echo = FALSE, warning = FALSE, fig.height=2.5}
+par(mfrow = c(1, 2))
+plot_residual_for_CL_f_k1(k=1, ct1, 1)
+plot_residual_for_CL_f_k1(k=1, ct2, 2)
+title("Figure 4: Expression 2 against C_i,k for product 1 and 2", line = -1, outer = TRUE, cex.main = 1)
+```
+
+Lastly, we plot expression 3: $(C_{i,k+1} - C_{i,k}f_{k2}) / C_{i,k}$ against $C_{i,k}$, where $f_{k2} = \frac{1}{I-k}\sum_{i=1}^{I-k} ( C_{i,k+1} / C_{i,k})$. 
+
+\bigskip
+
+```{r echo = FALSE, warning = FALSE, fig.height=2.5}
+par(mfrow = c(1, 2))
+plot_residual_for_CL_f_k2(k=1, ct1, 1)
+plot_residual_for_CL_f_k2(k=1, ct2, 2)
+title("Figure 5: Expression 3 against C_i,k for product 1 and 2", line = -1, outer = TRUE, cex.main = 1)
+```
+
+Mack suggest that all this should be done for every development year with at least $6$ data points, i.e for $k \leq I - 6$, however we chose do only include plots for $k=1$ since we could not see any systematic residuals or non-random pattern for any development years. We can therefore conclude that the third chain-ladder assumption is satisfied.
+
+Lastly we want to examine whether or not we have any calender year effects, the second chain-ladder assumption. To do this we follow the procedure explained in Appendix H in Mack's article. We begin by creating a triangle for the development factors which we can see in Table 6 for branch 1 and in Table 9 for branch 2. We continue by computing the column means in this triangle. Now, if the development factor for a cell is
+
+* equal to the mean, we assign "-" to this cell,
+* smaller than the mean, we assign "S" to this cell,
+* larger than the mean, we assign "L" to this cell. 
+
+The result of this is shown in Table 7 and Table 10 respectively for branch 1 and 2. Following the article, we now want to compute the number of "S" and "L" for each diagonal $A_j$ for $2\leq j \leq 9$. We denote the number of "S" in a diagonal by $S_j$ and the number of "L" by $L_j$. Furthermore, we compute 
+
+* $Z_j = \min (S_j, L_j)$,
+* $n = S_j + L_j$,
+* $m = [(n-1)/2]$, which denotes the largest integer $\leq (n-1)/2$,
+* $E[Z_j] = \frac{n}{2} - \binom{n-1}{m} \frac{n}{2^n}$,
+* $Var(Z_j) = \frac{n(n-1)}{4} - \binom{n-1}{m} \frac{n(n-1)}{2^n} + E[Z_j] - E[Z_j]^2$.
+
+The result of this computation can be seen in Table 8 and Table 11 respectively for branch 1 and 2. We will now perform a test which test the null-hypothesis of no calendar year effects. We use the test statistic $Z = \sum_j Z_j$, and if $Z$ is not in the following $95\%$ confidence interval, $(E[Z]-2 \sqrt{Var(Z)}, E[Z]+2 \sqrt{Var(Z)})$, we can reject the null-hypothesis of no calendar year effects. Furthermore, we have that $E[Z] = \sum_j E[Z_j]$ and $Var(Z) = \sum_j Var(Z_j)$. 
+
+```{r echo = FALSE, warning = FALSE}
+devFactorTriangle <- function(ct){
+  I = nrow(ct)
+  devFactorTriangle <- data.frame(data.frame(ct)[1:I,2] / data.frame(ct)[1:I,1])
+  for(k in 2:(I-1)){
+    devFactorTriangle <- cbind(devFactorTriangle, data.frame(data.frame(ct)[1:I,k+1] / data.frame(ct)[1:I,k]))
+    
+  }
+  devFactorTriangle %>% setNames(paste0("F", 1:(I-1))) %>% slice(1:(I-1))
+}
+
+devFactor1 <- devFactorTriangle(ct1)
+
+SorL <- function(x) (x = ifelse(x > mean(x, na.rm = TRUE), "L", ifelse(x < mean(x, na.rm = TRUE), "S", "-")))
+devFactor1SorL <- devFactor1 %>% mutate_all(SorL) 
+
+#notice this is not the same I as in function above since we sliced, that is this I is one smaller
+I = nrow(devFactor1)
+flipped <- devFactor1SorL[,I:1]
+
+Sj <- c()
+Lj <- c()
+for(j in 2:I){
+  diag = I-j
+  occurances <- as.data.frame(t(as.matrix(table(flipped[row(flipped) == (col(flipped)-diag)]))))
+  Sj <- c(Sj, occurances$S)
+  Lj <- c(Lj, occurances$L)
+}
+
+hyptestData1 <- data.frame(Sj, Lj) %>%  
+  rowwise() %>% 
+  mutate(Zj = min(Sj, Lj), n = Sj + Lj) %>% 
+  mutate(m = floor((n-1)/2)) %>% 
+  mutate(EZj = n/2 - choose(n-1,m) * n / (2^n)) %>% 
+  mutate(VarZj = n*(n-1)/4 - choose(n-1,m)*n*(n-1)/(2^n) + EZj - EZj^2)
+
+#We do NOT reject null hypothesis of no calender year effects
+confidenceInt1 <- sum(hyptestData1$EZj) + c(-1,1)* 2*sqrt(sum(hyptestData1$VarZj))
+teststatistic1 <- sum(hyptestData1$Zj)
+
+
+
+#Branch 2
+devFactor2 <- devFactorTriangle(ct2)
+
+devFactor2SorL <- devFactor2 %>% mutate_all(SorL) 
+
+#notice this is not the same I as in function above since we sliced, that is this I is one smaller
+I = nrow(devFactor2)
+flipped <- devFactor2SorL[,I:1]
+
+Sj <- c()
+Lj <- c()
+for(j in 2:I){
+  diag = I-j
+  occurances <- as.data.frame(t(as.matrix(table(flipped[row(flipped) == (col(flipped)-diag)]))))
+  Sj <- c(Sj, occurances$S)
+  Lj <- c(Lj, occurances$L)
+}
+
+hyptestData2 <- data.frame(Sj, Lj) %>%  
+  rowwise() %>% 
+  mutate(Zj = min(Sj, Lj), n = Sj + Lj) %>% 
+  mutate(m = floor((n-1)/2)) %>% 
+  mutate(EZj = n/2 - choose(n-1,m) * n / (2^n)) %>% 
+  mutate(VarZj = n*(n-1)/4 - choose(n-1,m)*n*(n-1)/(2^n) + EZj - EZj^2)
+
+
+#We reject null hypothesis of no calender year effects
+confidenceInt2 <- sum(hyptestData2$EZj) + c(-1,1)* 2*sqrt(sum(hyptestData2$VarZj))
+teststatistic2 <- sum(hyptestData2$Zj)
+```
+
+
+For branch 1 we got $Z=$ `r teststatistic1` which is inside the corresponding confidence interval (`r confidenceInt1[1]`, `r confidenceInt1[2]`). For branch 2 we got $Z=$ `r teststatistic2`  which is also inside the confidence interval (`r confidenceInt2[1]`, `r confidenceInt2[2]`) and thus we do not reject the null-hypothesis of no calendar year effects for branch 2.  We can thus go on with the chain-ladder method. 
+
+
+```{r echo = FALSE, warning = FALSE}
+data.frame(rownames(devFactor1)) %>% 
+  setNames(c(" ")) %>%  
+  cbind(devFactor1) %>% 
+  kable(caption = "Developement Factor Triangle for Branch 1") %>% 
+  kable_styling(latex_options = "HOLD_position") 
+
+data.frame(rownames(devFactor1SorL)) %>% 
+  setNames(c(" ")) %>%  
+  cbind(devFactor1SorL) %>% 
+  kable(caption = "Developement Factors as S or L if smaller or larger than column mean for Branch 1") %>% 
+  kable_styling(latex_options = "HOLD_position") 
+
+hyptestData1 %>% 
+  kable(caption = "Some results for Branch 1") %>% 
+  kable_styling(latex_options = "HOLD_position") 
+
+data.frame(rownames(devFactor2)) %>% 
+  setNames(c(" ")) %>%  
+  cbind(devFactor2) %>% 
+  kable(caption = "Developement Factor Triangle for Branch 2") %>% 
+  kable_styling(latex_options = "HOLD_position") 
+
+data.frame(rownames(devFactor2SorL)) %>% 
+  setNames(c(" ")) %>%  
+  cbind(devFactor2SorL) %>% 
+  kable(caption = "Developement Factors as S or L if smaller or larger than column mean for Branch 2") %>% 
+  kable_styling(latex_options = "HOLD_position") 
+
+hyptestData2 %>% 
+  kable(caption = "Some results for Branch 2") %>% 
+  kable_styling(latex_options = "HOLD_position") 
+```
+
+
+
+
+
+```{r echo = FALSE, warning = FALSE, include = FALSE}
+#Branch 1
+
+n <- nrow(ct1)
+
+fList1 <- list()
+
+for(k in 1:(n-1)){
+  
+  fk <- c()
+  
+  for(i in 1:(n-k)){
+    
+    temp <- unlist(ct1[i, k+1])/unlist(ct1[i,k])
+    
+    names(temp) <- k+i-1 #år
+    
+    fk <- c(fk, temp)
+    
+  }
+  
+  fList1[[k]] <- sort(fk)
+  
+  
+  
+}
+
+
+#Branch 2
+n <- nrow(ct2)
+
+fList2 <- list()
+
+for(k in 1:(n-1)){
+  
+  fk <- c()
+  
+  for(i in 1:(n-k)){
+    
+    temp <- unlist(ct2[i, k+1])/unlist(ct2[i,k])
+    
+    names(temp) <- k+i-1 #år
+    
+    fk <- c(fk, temp)
+    
+  }
+  
+  fList2[[k]] <- sort(fk)
+  
+}
+
+fList2
+
+
+#Detta blev ju väldigt fult men det får fram budskapet
+#Gör en tabell där man räknar kardinaleteten av
+#sFk och lFk för alla k??
+
+
+```
+
+
+
+#Exercise 3
+In this exercise we wish to examine the variance parameter for the last development year (i.e. development year 10). We can do this by implementing the formulas presented in Mack's paper. First we have that
+
+$$
+\widehat{\text{s.e.}}(R)^2 = \sum_{i=2}^{I} \widehat{\text{s.e.}}(C_{i,I})^2 + C_{i,I}\left(\sum_{j=i+1}^I C_{j,I}\right)\sum_{k=I+1-i}^{I-1}\frac{2\hat\sigma_k^2}{\hat f_k^2\sum_{n=1}^{I-k}C_{n,k}}
+$$
+
+where
+
+$$
+\widehat{\text{s.e.}}(C_{i,I})^2 = C_{i,I}^2 \sum_{k=I+1-i}^{I-1} \frac{\hat\sigma_k^2}{\hat f_k^2}\left(\frac{1}{C_{i,k}} + \frac{1}{\sum_{j=1}^{I-k}C_{j,k}}\right)
+$$
+
+and where we estimate $\sigma_k^2$ by
+
+$$
+\hat \sigma_k^2 = \frac{1}{I-k-1}\sum_{j=1}^{I-k}C_{j,k}\left(\frac{C_{j,k+1}}{C_{j,k}}-\hat f_k \right)^2
+$$
+and
+
+$$
+\hat f_k = \frac{\sum_{j=1}^{I-k}C_{i,k+1}}{\sum_{j=1}^{I-k}C_{i,k}}
+$$
+as previously.
+
+```{r echo = FALSE, warning = FALSE}
+
+#WE now need the last 11 years
+
+ct1Alt <- data %>% 
+  rbind(c(1,10,10,1,1,0)) %>% 
+  filter(ClaimType == 1) %>% 
+  filter(ClaimYear >= 10) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>% 
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  select(-ClaimYear)
+
+ct2Alt <- data %>% 
+  rbind(c(2,10,10,1,1,0)) %>% 
+  filter(ClaimType == 2) %>% 
+  filter(ClaimYear >= 10) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>% 
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  select(-ClaimYear)
+
+estimateSigma <- function(ct){
+  
+  n <- ncol(ct)
+  
+  r <- nrow(ct)
+  
+  C <- fillct(ct)
+  
+  fHat <- estimateF(ct)
+  
+  sigmaHat <- c()
+  
+  for(k in 1:(n-1)){
+    
+    sum <- 0
+    
+    for(i in 1:(r-k)){
+      
+      sum = sum + C[i,k]*(C[i,k+1]/(C[i,k]) - fHat[k])^2 
+      
+    }
+    
+    sigmaHat = c(sigmaHat, unlist(sum)/(n-k-0)) #-0 då i_0 = 0
+    
+  }
+  
+  sigmaHat
+  
+}
+
+sigmaHat1 <- estimateSigma(ct1Alt) #estimates sigma^2 for type 1
+
+sigmaHat2 <- estimateSigma(ct2Alt) #estimates sigma^2 for type 2
+
+riskCalculation <- function(ct, ctAlt){
+  
+  n <- ncol(ct)
+  
+  C <- matrix(unlist(fillct(ct)), ncol = n)
+  
+  fHat <- estimateF(ctAlt)
+  
+  sigmaHat <- estimateSigma(ctAlt) #estimates sigma^2
+  
+  sum <- 0
+  
+  for(i in 2:n){
+    
+    for(k in (n+1-i):(n-1)){
+      
+      sum = sum + C[i,n]^2*(sigmaHat[k]/fHat[k]^2*(1/C[i,k] + 1/sum(C[1:(n-k),k]))) 
+      
+    }
+    
+    if(i < n){
+      
+      extra = C[i,n]*sum(C[(i+1):n,n])*2*sum((sigmaHat/fHat^2)[(n+1-i):(n-1)])/sum(C[1:(n-k), k])
+      
+    } else {
+      
+      extra = 0
+      
+    }
+    
+    sum = sum + extra
+    
+  }
+ 
+  sum
+  
+}
+
+risk1 <- round(sqrt(unname(riskCalculation(ct1, ct1Alt))))
+
+risk2 <- round(sqrt(unname(riskCalculation(ct2, ct2Alt))))
+
+kable(rbind(c("Product 1", risk1), c("Product 2", risk2)), caption = "Reserve Risk") %>%  kable_styling(latex_options =c("hold_position"))
+
+```
+
+We see in Table 12 that there is vastly more risk ($\widehat{s.e}(R)$) in Product 2 than Product 1 which seems reasonable if we note that there seems to be no new claims during the last four development years, for branch 1, meaning that the risk only propagates in the initial six development years, at least according to our observed years. Another factor that leads to this difference is the fact that the ultimate claims reserve is greater for the first insurance product compared to the second.
+
+#Exercise 4
+
+In this exercise we aim to predict the ultimate claim amounts $R_1$ and $R_2$ for insurance product 1 and 2 respectively. We then want to update our predictions assuming that we access to more data. In this case we use the first 10 years of data which have been fully developed whilst assuming that we only have access to a fraction of those years. Initially we assume to know the outcomes of the first 5 years which can be presented in the following paid claims triangles (Table 13 and 14).
+
+```{r echo = FALSE, warning = FALSE}
+
+
+disp1 <- data %>% 
+  rbind(c(1,1,10,1,1,0)) %>% 
+  rbind(c(1,10,10,1,1,0)) %>% 
+  filter(ClaimType == 1) %>% 
+  filter(ClaimYear + DevelopmentYear <= 11) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>%
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  filter(ClaimYear <= 10) %>% 
+  select(-ClaimYear)
+
+disp2 <- data %>% 
+  rbind(c(2,1,10,1,1,0)) %>% 
+  rbind(c(2,10,10,1,1,0)) %>% 
+  filter(ClaimType == 2) %>% 
+  filter(ClaimYear + DevelopmentYear <= 11) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>%
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  filter(ClaimYear <= 10) %>% 
+  select(-ClaimYear)
+
+
+kable(disp1, caption = "Paid claims triangle for product 1", row.names = c(1:10)) %>%
+  kable_styling(latex_options=c("hold_position", "scale_down"))
+
+kable(disp2, caption = "Paid claims triangle for product 2", row.names = c(1:10)) %>%
+  kable_styling(latex_options=c("hold_position", "scale_down"))
+
+```
+
+Tables 13 and 14 can then be filled out using Mack's non-parametric CL approach, giving us the ultimate claim amounts for the two branches. What we then want to do is to iteratively assume additional years of data as known. In the first step this corresponds to assuming that the data present in the subantidiagonal is known and so on. When assuming this new data as know we also take it into account when estimating the development factors $f_k$ which we then use to fill out the claims triangle (trapezoid). From this filled out claims triangle we can then extract the predicted ultimate claims amount for each iteration. These values are presented in Table 15 below. 
+
+```{r echo = FALSE, warning = FALSE}
+
+prevct1 <- data %>% 
+  rbind(c(1,1,10,1,1,0)) %>% 
+  rbind(c(1,10,10,1,1,0)) %>% 
+  filter(ClaimType == 1) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>%
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  filter(ClaimYear <= 10) %>% 
+  select(-ClaimYear)
+
+prevct2 <- data %>% 
+  rbind(c(2,1,10,1,1,0)) %>% 
+  rbind(c(2,10,10,1,1,0)) %>% 
+  filter(ClaimType == 2) %>% 
+  group_by(ClaimYear, DevelopmentYear) %>% 
+  summarize(Total = sum(ClaimCost)) %>%
+  mutate(Total = cumsum(Total)) %>% 
+  spread(value = Total, key = DevelopmentYear) %>% 
+  ungroup() %>% 
+  filter(ClaimYear <= 10) %>% 
+  select(-ClaimYear)
+
+estimateFAlt <- function(ct, known = 0){
+  
+  n <- ncol(ct)
+  
+  r <- nrow(ct)
+  
+  fVec <- c()
+  
+  for(i in 1:(n-1)){
+    
+    f <- sum(ct[1:min(r-i+known, r),i+1])/sum(ct[1:min(r-i+known, r),i])
+    
+    fVec[i] <- f
+    
+  }
+  
+  fVec
+  
+}
+
+
+fillAlt <- function(ct, known = 0){
+  
+  temp <- ct
+  
+  n <- ncol(ct)
+  
+  fHat <- estimateFAlt(ct, known)
+  
+  if(known < (n-1)){
+  
+    for(i in (known+2):n){
+    
+      for(j in (n-i+known+2):n){
+        
+        temp[i,j] <- temp[i,j-1]*fHat[j-1]
+      
+      }
+      
+    }
+
+  }
+  
+  temp
+  
+}
+
+#Branch 1
+# 
+# uc1 <- c()
+# 
+# for(i in 0:8){
+#   
+#   obs <- as.matrix(fillAlt(prevct1, i))
+#   
+#   d <- row(obs)-col(obs)
+# 
+#   diags <- split(obs[10:1,], d)[10:19]
+#   
+#   uc1 <- c(uc1, sum(obs[(i+1):10,10] - unlist(diags[i+1])))
+#   
+# }
+# 
+# 
+# uc2 <- c()
+# 
+# for(i in 0:8){
+#   
+#   obs <- as.matrix(fillAlt(prevct2, i))
+#   
+#   d <- row(obs)-col(obs)
+# 
+#   diags <- split(obs[10:1,], d)[10:19]
+#   
+#   uc2 <- c(uc2, sum(obs[(i+1):10,10] - unlist(diags[i+1])))
+#   
+# }
+
+
+uc2 <- c()
+
+for(i in 0:8){
+
+  obs <- as.matrix(fillAlt(prevct2, i))
+
+  uc2 <- c(uc2, sum(obs[,10]))
+
+}
+
+uc1 <- c()
+
+for(i in 0:8){
+
+  obs <- as.matrix(fillAlt(prevct1, i))
+
+  uc1 <- c(uc1, sum(obs[,10]))
+
+}
+
+cbind(rep(1,9),c(0:8),uc1) %>% 
+  rbind(cbind(rep(2,9),c(0:8),uc2)) %>% 
+  data.frame() %>% 
+  setNames(c("Branch", "Year", "Reserve")) %>%
+  spread(value = Reserve, key = Year) %>% 
+  kable(caption = "Development of ultimate claim predictions given additional years of data") %>%
+  kable_styling(latex_options=c("hold_position", "scale_down"))
+
+```
+
+The main thing to take away from this is that the initial predictions seem to be, in retrospect, quite good predictors of the ultimate claim amounts. 
